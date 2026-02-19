@@ -166,20 +166,23 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_data(data)
 
 # ================= MAIN =================
-
+def main():
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("id", show_id))
 
-    app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND, receive_message))
+    # Text messages
+    app.add_handler(
+        MessageHandler(
+            filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND,
+            receive_message
+        )
+    )
 
-    app.add_handler(CallbackQueryHandler(department_selected, pattern="^dept"))
-    app.add_handler(CallbackQueryHandler(status_handler, pattern="^(progress|done)"))
+    # Callbacks
+    app.add_handler(CallbackQueryHandler(department_selected, pattern=r"^dept:"))
+    app.add_handler(CallbackQueryHandler(status_handler, pattern=r"^(progress|done):"))
 
     app.run_polling()
-
-if __name__ == "__main__":
-    main()
-
