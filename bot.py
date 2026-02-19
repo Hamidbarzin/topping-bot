@@ -1,138 +1,184 @@
 import os
-import uuid
+import json
 from datetime import datetime
-
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from telegram.ext import (
     Application,
     CommandHandler,
-    CallbackQueryHandler,
-    ConversationHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
 
-# Conversation states
-SELECT_DEPT, SELECT_NODE, ASK_TITLE, ASK_DESC = range(4)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-DEPTS = [
-    ("IT", "🧰 IT"),
-    ("MARKETING", "📣 Marketing"),
-    ("SEO", "🔎 SEO & Google"),
-    ("LOGISTICS", "🚚 Logistics"),
-    ("ALGO", "🧠 Algorithm & Pricing"),
-    ("MEETING", "📅 Book Meeting"),
-    ("URGENT", "🚨 Urgent Escalation"),
-]
+HAMID_ID = int(os.getenv("HAMID_ID", "0"))
+FALLON_ID = int(os.getenv("FALLON_ID", "0"))
 
-# 5 Nodes (همون‌هایی که ساختی)
-NODES = [
-    ("WEST", "Node | West"),
-    ("EAST", "Node | East"),
-    ("MIDTOWN", "Node | Midtown"),
-    ("NORTH", "Node | North"),
-    ("DOWNTOWN", "Node | Downtown"),
-    ("NA", "N/A (No Node)"),
-]
+# 🔹 مدیر هر دپارتمان
+DEPARTMENT_MANAGER = {
+    "IT": 111111111,
+    "MARKETING": 222222222,
+    "OPS": 333333333,
+    "SALES": 444444444,
+}
 
-def make_ticket_id() -> str:
-    return datetime.now().strftime("%y%m%d") + "-" + uuid.uuid4().hex[:6].upper()
+DATA_FILE = "tickets.json"
+
+# ================= STORAGE =================
+
+def load_data():
+    if not os.path.exists(DATA_FILE):
+        return {"tickets": {}, "daily_counter": {}}
+    with open(DATA_FILE, "r") as f:
+        return json.load(f)
+
+def save_data(data):
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+def generate_ticket_id(prefix):
+    today = datetime.now().strftime("%Y%m%d")
+    data = load_data()
+
+    if today not in data["daily_counter"]:
+        data["daily_counter"][today] = 0
+
+    data["daily_counter"][today] += 1
+    counter = str(data["daily_counter"][today]).zfill(4)
+
+    save_data(data)
+    return f"{prefix}-{today}-{counter}"
+
+# ================= COMMANDS =================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Hi! Type /menu to submit a request.")
-
-async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[InlineKeyboardButton(label, callback_data=key)] for key, label in DEPTS]
     await update.message.reply_text(
-        "Select request type (Dept):",
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        "Send your task message.\nYou will then select department."
     )
-    return SELECT_DEPT
 
-async def select_dept(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"Your Telegram ID:\n{update.effective_user.id}")
+
+# ================= CREATE FLOW =================
+
+async def receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type != "private":
+        return
+
+    context.user_data["draft"] = update.message.text
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("IT", callback_data="dept|IT")],
+        [InlineKeyboardButton("Marketing", callback_data="dept|MARKETING")],
+        [InlineKeyboardButton("Operations", callback_data="dept|OPS")],
+        [InlineKeyboardButton("Sales", callback_data="dept|SALES")],
+    ])
+
+    await update.message.reply_text(
+        "Select department:",
+        reply_markup=keyboard
+    )
+
+# ================= DEPARTMENT SELECT =================
+
+async def department_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    context.user_data["dept"] = query.data
+    _, dept = query.data.split("|")
 
-    node_keyboard = [[InlineKeyboardButton(label, callback_data=f"NODE::{key}")] for key, label in NODES]
-    await query.edit_message_text(
-        "Select node (if applicable):",
-        reply_markup=InlineKeyboardMarkup(node_keyboard),
+    if dept not in DEPARTMENT_MANAGER:
+        return
+
+    manager_id = DEPARTMENT_MANAGER[dept]
+    ticket_id = generate_ticket_id(dept)
+
+    message_text = context.user_data.get("draft", "")
+
+    data = load_data()
+    data["tickets"][ticket_id] = {
+        "staff_id": update.effective_user.id,
+        "manager_id": manager_id,
+        "status": "OPEN"
+    }
+    save_data(data)
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🟡 In Progress", callback_data=f"progress|{ticket_id}"),
+            InlineKeyboardButton("🟢 Done", callback_data=f"done|{ticket_id}")
+        ]
+    ])
+
+    formatted = (
+        f"📩 New Task\n\n"
+        f"Ticket: {ticket_id}\n"
+        f"From: {update.effective_user.full_name}\n"
+        f"Department: {dept}\n\n"
+        f"{message_text}"
     )
-    return SELECT_NODE
 
-async def select_node(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # ارسال به مدیر مقصد
+    await context.bot.send_message(
+        chat_id=manager_id,
+        text=formatted,
+        reply_markup=keyboard
+    )
+
+    # ارسال به Hamid و Fallon (نظارت)
+    await context.bot.send_message(chat_id=HAMID_ID, text=formatted)
+    await context.bot.send_message(chat_id=FALLON_ID, text=formatted)
+
+    await query.edit_message_text(f"✅ Ticket created:\n{ticket_id}")
+
+# ================= STATUS HANDLER =================
+
+async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    node_key = query.data.split("::", 1)[1]
-    context.user_data["node"] = node_key
+    action, ticket_id = query.data.split("|")
 
-    await query.edit_message_text("Title? (short)")
-    return ASK_TITLE
+    data = load_data()
+    ticket = data["tickets"].get(ticket_id)
 
-async def ask_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["title"] = update.message.text.strip()
-    await update.message.reply_text("Description? (details + deadline if any)")
-    return ASK_DESC
+    if not ticket:
+        return
 
-async def ask_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    desc = update.message.text.strip()
+    if update.effective_user.id != ticket["manager_id"]:
+        await query.answer("Not authorized", show_alert=True)
+        return
 
-    dept = context.user_data.get("dept", "UNKNOWN")
-    node = context.user_data.get("node", "NA")
-    title = context.user_data.get("title", "")
-    ticket_id = make_ticket_id()
+    if action == "progress":
+        ticket["status"] = "IN_PROGRESS"
+        await query.edit_message_text(f"🟡 {ticket_id}\nStatus: IN PROGRESS")
 
-    user = update.effective_user
-    requester = f"{user.full_name} (@{user.username})" if user.username else user.full_name
+    elif action == "done":
+        ticket["status"] = "DONE"
+        await query.edit_message_text(f"🟢 {ticket_id}\nStatus: DONE")
 
-    ticket_msg = (
-        f"🟦 **NEW TICKET**  |  `{ticket_id}`\n"
-        f"**Dept:** {dept}\n"
-        f"**Node:** {node}\n"
-        f"**Title:** {title}\n"
-        f"**From:** {requester}\n\n"
-        f"**Description:**\n{desc}\n\n"
-        f"**Status:** OPEN"
-    )
+    save_data(data)
 
-    await update.message.reply_text(ticket_msg, parse_mode="Markdown")
-
-    for k in ("dept", "node", "title"):
-        context.user_data.pop(k, None)
-
-    return ConversationHandler.END
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Cancelled.")
-    return ConversationHandler.END
+# ================= MAIN =================
 
 def main():
-    token = os.getenv("BOT_TOKEN")
-    if not token:
-        raise SystemExit("Set BOT_TOKEN environment variable first (BOT_TOKEN).")
-
-    app = Application.builder().token(token).build()
-
-    conv = ConversationHandler(
-        entry_points=[CommandHandler("menu", menu)],
-        states={
-            SELECT_DEPT: [CallbackQueryHandler(select_dept)],
-            SELECT_NODE: [CallbackQueryHandler(select_node, pattern=r"^NODE::")],
-            ASK_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_title)],
-            ASK_DESC: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_desc)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
+    app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(conv)
+    app.add_handler(CommandHandler("id", show_id))
 
-    print("Bot running... Press Ctrl+C to stop.")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND, receive_message))
+
+    app.add_handler(CallbackQueryHandler(department_selected, pattern="^dept"))
+    app.add_handler(CallbackQueryHandler(status_handler, pattern="^(progress|done)"))
+
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
