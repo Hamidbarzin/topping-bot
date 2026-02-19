@@ -1,5 +1,6 @@
 import os
 import json
+
 from datetime import datetime
 from telegram import (
     Update,
@@ -66,8 +67,8 @@ async def show_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Your Telegram ID:\n{update.effective_user.id}")
 
 # ================= CREATE FLOW =================
-
 async def receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+print("MESSAGE RECEIVED:", update.message.text)
     if update.effective_chat.type != "private":
         return
 
@@ -167,9 +168,9 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= MAIN =================
 def main():
-def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
+    # Commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("id", show_id))
 
@@ -186,3 +187,7 @@ def main():
     app.add_handler(CallbackQueryHandler(status_handler, pattern=r"^(progress|done):"))
 
     app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
