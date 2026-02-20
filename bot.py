@@ -66,10 +66,34 @@ async def show_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # STEP 1: کاربر پیام میده → انتخاب دپارتمان
 # =========================
 async def receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.type != "private":
+    if not update.message or not update.message.text:
         return
 
-    context.user_data["draft"] = update.message.text
+    chat = update.effective_chat
+    text = update.message.text.strip()
+
+    # اگر گروه بود، مستقیم تیکت بساز (بدون انتخاب دپارتمان)
+    if chat.type in ("group", "supergroup"):
+        context.user_data["draft"] = text
+
+        # برای مثال: پیشفرض OPS
+        dept = "OPS"
+        ticket_id = generate_ticket_id(dept)
+
+        data = load_data()
+        data["tickets"][ticket_id] = {
+            "text": text,
+            "dept": dept,
+            "status": "OPEN",
+            "manager_id": DEPARTMENT_MANAGER.get(dept),
+        }
+        save_data(data)
+
+        await update.message.reply_text(f"✅ Ticket created: {ticket_id}")
+        return
+
+    # اگر PV بود → انتخاب دپارتمان
+    context.user_data["draft"] = text
 
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("💻 IT", callback_data="DEPT_IT")],
@@ -79,7 +103,6 @@ async def receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
 
     await update.message.reply_text("Select department:", reply_markup=keyboard)
-
 # =========================
 # STEP 2: انتخاب دپارتمان → ساخت تیکت
 # =========================
@@ -204,19 +227,11 @@ def main():
     # انتخاب دپارتمان
     app.add_handler(CallbackQueryHandler(department_selected, pattern=r"^DEPT_"))
 
-    # آپدیت status
+    # آپدیت وضعیت
     app.add_handler(CallbackQueryHandler(status_handler, pattern=r"^STATUS_"))
 
-    # پیام‌های متنی (باید آخر باشه)
-    app.add_handler(
-        MessageHandler(
-            filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND,
-            receive_message
-        )
-    )
+    # پیام های متنی (PV + Group)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_message))
 
     print("Bot started.")
     app.run_polling(drop_pending_updates=True)
-
-if __name__ == "__main__":
-    main()
