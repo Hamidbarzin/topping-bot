@@ -1,3 +1,5 @@
+print("🔥 FILE LOADED")
+
 import os
 import json
 from datetime import datetime
