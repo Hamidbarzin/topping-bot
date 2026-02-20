@@ -1,3 +1,4 @@
+
 print("🔥 FILE LOADED")
 
 import os
@@ -21,11 +22,12 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 HAMID_ID = int(os.getenv("HAMID_ID", "0"))
 FALLON_ID = int(os.getenv("FALLON_ID", "0"))
 
+
 DEPARTMENT_MANAGER = {
-    "IT":        111111111,
-    "MARKETING": 222222222,
-    "OPS":       333333333,
-    "SALES":     444444444,
+    "IT":        722627622,
+    "MARKETING": 722627622,
+    "OPS":       722627622,
+    "SALES":     722627622,
 }
 
 DATA_FILE = "tickets.json"
