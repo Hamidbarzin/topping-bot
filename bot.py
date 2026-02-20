@@ -57,14 +57,38 @@ async def on_status(u,c):
     await q.edit_message_text(f"{'🟡' if action=='p' else '🟢'} {tid} — {t['status']}")
 
 def main():
-    app=Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start",start))
-    app.add_handler(CommandHandler("id",show_id))
-    app.add_handler(CallbackQueryHandler(on_dept,pattern=r"^D_"))
-    app.add_handler(CallbackQueryHandler(on_status,pattern=r"^S_"))
-    app.add_handler(MessageHandler(filters.ChatType.PRIVATE&filters.TEXT&~filters.COMMAND,on_message))
-    print("Bot running.")
-    app.run_polling(drop_pending_updates=True)
 
-if __name__=="__main__": main()
-EOF
+import time
+from telegram.error import NetworkError, TimedOut
+
+def build_app():
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("id", show_id))
+    app.add_handler(CallbackQueryHandler(department_selected, pattern=r"^DEPT_"))
+    app.add_handler(CallbackQueryHandler(status_handler, pattern=r"^STATUS_"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_message))
+
+    return app
+
+def main():
+    backoff = 5  # seconds
+    while True:
+        try:
+            app = build_app()
+            print("Bot started.")
+            # long_polling_timeout کمک می‌کند درخواست‌ها پایدارتر شوند
+            app.run_polling(drop_pending_updates=True, long_polling_timeout=30)
+            backoff = 5  # اگر از polling خارج شد، backoff ریست
+        except (NetworkError, TimedOut) as e:
+            print(f"[NetworkError] {e} — retry in {backoff}s")
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 60)  # max 60s
+        except Exception as e:
+            print(f"[Fatal] {e} — retry in {backoff}s")
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 60)
+
+if __name__ == "__main__":
+    main()
