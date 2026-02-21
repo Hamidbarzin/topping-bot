@@ -60,10 +60,19 @@ async def show_id(u, c):
     await u.message.reply_text(f"Your ID: {u.effective_user.id}")
 
 
-async def on_message(u, c):
-    if u.effective_chat.type != "private":
+async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Only handle messages from private chats.
+    if update.effective_chat and update.effective_chat.type != "private":
+        logger.info("Ignoring non-private chat in on_message: chat_type=%s chat_id=%s",
+                    update.effective_chat.type, update.effective_chat.id)
         return
-    c.user_data["draft"] = u.message.text
+
+    if update.message is None:
+        logger.warning("on_message called without a message object: %s", update)
+        return
+
+    # Preserve existing business logic: store draft and prompt for department.
+    context.user_data["draft"] = update.message.text
     kb = InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("IT", callback_data="DEPT_IT")],
@@ -72,7 +81,7 @@ async def on_message(u, c):
             [InlineKeyboardButton("Sales", callback_data="DEPT_SALES")],
         ]
     )
-    await u.message.reply_text("Select department:", reply_markup=kb)
+    await update.message.reply_text("Select department:", reply_markup=kb)
 
 
 async def on_dept(u, c):
