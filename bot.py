@@ -2,6 +2,7 @@ import logging
 import os
 import json
 import time
+import socket
 from datetime import datetime
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -22,6 +23,9 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+_WEBHOOK_CLEARED = False
 
 
 HAMID_ID = int(os.getenv("HAMID_ID", "722627622"))
@@ -135,6 +139,35 @@ async def on_status(u, c):
     t["status"] = "IN_PROGRESS" if action == "p" else "DONE"
     save_data(d)
     await q.edit_message_text(f"{'🟡' if action == 'p' else '🟢'} {tid} — {t['status']}")
+
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Global error handler to log exceptions from all handlers."""
+    logger.error("Unhandled exception while handling update: %s", context.error, exc_info=context.error)
+
+    if isinstance(context.error, Conflict):
+        logger.error(
+            "Conflict error inside handler: %s. This usually means another instance is polling "
+            "with the same BOT_TOKEN. Ensure Render worker instances=1 and no other service "
+            "or local process is running this bot.",
+            repr(context.error),
+        )
+
+
+async def post_init(application: Application) -> None:
+    """One-time webhook cleanup before polling, running inside PTB's event loop."""
+    global _WEBHOOK_CLEARED
+
+    if _WEBHOOK_CLEARED:
+        return
+
+    try:
+        await application.bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Webhook deleted successfully at startup (drop_pending_updates=True)")
+    except Exception as e:
+        logger.warning("Failed to delete webhook on startup: %s", e)
+
+    _WEBHOOK_CLEARED = True
 
 
 def format_task_message(task: dict) -> str:
@@ -458,7 +491,12 @@ def build_application() -> Application:
             "Environment variable BOT_TOKEN is not set. Please configure BOT_TOKEN on Render."
         )
 
-    application = ApplicationBuilder().token(token).build()
+    application = (
+        ApplicationBuilder()
+        .token(token)
+        .post_init(post_init)
+        .build()
+    )
 
     # Register handlers exactly once
     application.add_handler(CommandHandler("start", start))
@@ -469,11 +507,16 @@ def build_application() -> Application:
     application.add_handler(CallbackQueryHandler(escalate_handler, pattern=r"^ESCALATE_"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_message))
 
+    # Global error handler to avoid noisy "No error handlers are registered" messages
+    application.add_error_handler(error_handler)
+
     return application
 
 
 def main() -> None:
-    logger.info("Starting Telegram bot worker process")
+    hostname = socket.gethostname()
+    pid = os.getpid()
+    logger.info("Starting Telegram bot worker process | instance=%s pid=%s", hostname, pid)
 
     # Backoff for generic network issues
     initial_backoff_seconds = 5
@@ -512,10 +555,10 @@ def main() -> None:
 
         except Conflict as e:
             logger.error(
-                "getUpdates Conflict detected: %s. This usually means another instance "
-                "is running with the same BOT_TOKEN (e.g. another Render worker, local "
-                "process, or another host). Ensure ONLY ONE polling instance is active. "
-                "Retrying in %s seconds.",
+                "getUpdates Conflict detected: %s. Another instance is likely polling with "
+                "the same BOT_TOKEN (e.g. extra Render worker, local process, or another "
+                "service). Ensure Render worker instances=1 and no duplicate service uses "
+                "this BOT_TOKEN. Retrying in %s seconds.",
                 repr(e),
                 conflict_backoff_seconds,
             )
