@@ -129,6 +129,18 @@ async def on_status(u, c):
 
 
 async def receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Temporary debug to confirm the message handler is firing.
+    logger.info(
+        "DEBUG message handler: chat_type=%s chat_id=%s",
+        getattr(update.effective_chat, "type", None),
+        getattr(update.effective_chat, "id", None),
+    )
+
+    if update.message is not None:
+        await update.message.reply_text("DEBUG: message received")
+    else:
+        logger.debug("receive_message called without a message object: %s", update)
+
     # Wrapper to keep original on_message business logic intact.
     await on_message(update, context)
 
