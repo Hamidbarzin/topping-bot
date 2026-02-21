@@ -137,6 +137,71 @@ async def on_status(u, c):
     await q.edit_message_text(f"{'🟡' if action == 'p' else '🟢'} {tid} — {t['status']}")
 
 
+def format_task_message(task: dict) -> str:
+    """Build a modern, formatted task summary based solely on stored task fields."""
+    created_at = task.get("created_at", "")
+    status = task.get("status", "new").upper()
+
+    creator_username = task.get("creator_username")
+    creator_name = task.get("creator_name")
+
+    if creator_username:
+        creator_display = f"@{creator_username}"
+    elif creator_name:
+        creator_display = creator_name
+    else:
+        creator_display = "(unknown user)"
+
+    assigned = task.get("assigned_to")
+    if isinstance(assigned, dict) and assigned.get("username"):
+        assigned_display = f"@{assigned['username']}"
+    elif isinstance(assigned, dict) and assigned.get("name"):
+        assigned_display = assigned["name"]
+    else:
+        assigned_display = "—"
+
+    lines = [
+        "🚀 NEW INTERNAL TASK",
+        "────────────────────",
+        f"🆔 Task: {task.get('task_id', '')}",
+        f"👤 From: {creator_display}",
+        f"📂 Department: {task.get('department', '')}",
+        f"📅 Created: {created_at}",
+        f"📌 Status: {status}",
+        f"👥 Assigned: {assigned_display}",
+        "",
+        "📝 Message:",
+        "--------------------------------",
+        task.get("original_message", ""),
+        "--------------------------------",
+    ]
+    return "\n".join(lines)
+
+
+def build_task_keyboard(task_id: str) -> InlineKeyboardMarkup:
+    """Inline keyboard for task lifecycle actions."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("🟡 In Progress", callback_data=f"STATUS_PROGRESS_{task_id}"),
+                InlineKeyboardButton("🟢 Done", callback_data=f"STATUS_DONE_{task_id}"),
+            ],
+            [
+                InlineKeyboardButton("👤 Assign to Me", callback_data=f"ASSIGN_{task_id}"),
+                InlineKeyboardButton("🔁 Escalate", callback_data=f"ESCALATE_{task_id}"),
+            ],
+        ]
+    )
+
+
+def get_task(task_id: str):
+    """Helper to load a single task and its backing data structure."""
+    data = load_data()
+    tickets = data.setdefault("tickets", {})
+    task = tickets.get(task_id)
+    return task, data, tickets
+
+
 async def receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Temporary debug to confirm the message handler is firing.
     logger.info(
@@ -155,19 +220,235 @@ async def receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def department_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Adapt "DEPT_" prefix for the existing on_dept handler which expects "D_".
+    """Create a new internal task and forward it to the department manager."""
     q = update.callback_query
-    if q and q.data and q.data.startswith("DEPT_"):
-        q.data = "D_" + q.data[len("DEPT_") :]
-    await on_dept(update, context)
+    if not q or not q.data or not q.data.startswith("DEPT_"):
+        if q:
+            await q.answer()
+        return
+
+    await q.answer()
+
+    dept = q.data.replace("DEPT_", "", 1)
+    if dept not in DEPT_MGR:
+        await q.edit_message_text("Unknown department.")
+        return
+
+    user = update.effective_user
+
+    # Original draft message from user_data, set in on_message
+    original_text = context.user_data.get("draft", "")
+
+    # Generate unique task ID
+    task_id = make_id(dept)
+
+    data = load_data()
+    tickets = data.setdefault("tickets", {})
+
+    created_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+
+    task = {
+        "task_id": task_id,
+        "department": dept,
+        "status": "new",
+        "created_by": user.id if user else None,
+        "creator_username": user.username if user else None,
+        "creator_name": user.full_name if user else None,
+        "created_at": created_at,
+        "assigned_to": None,
+        "messages": [],
+        "original_message": original_text,
+        "manager_chat_id": DEPT_MGR[dept],
+        "manager_message_id": None,
+    }
+
+    if original_text:
+        task["messages"].append(
+            {
+                "from": user.id if user else None,
+                "text": original_text,
+                "at": created_at,
+            }
+        )
+
+    tickets[task_id] = task
+    save_data(data)
+
+    # Send formatted task to department manager
+    mgr_chat_id = task["manager_chat_id"]
+    text = format_task_message(task)
+    keyboard = build_task_keyboard(task_id)
+
+    try:
+        sent = await context.bot.send_message(
+            chat_id=mgr_chat_id,
+            text=text,
+            reply_markup=keyboard,
+        )
+        # Persist manager message metadata for future edits
+        task["manager_message_id"] = sent.message_id
+        tickets[task_id] = task
+        save_data(data)
+    except Exception as e:
+        logger.exception("Failed to send task to manager chat: %s", e)
+
+    await q.edit_message_text(f"Task created: {task_id}")
 
 
 async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Adapt "STATUS_" prefix for the existing on_status handler which expects "S_".
+    """Handle status changes for tasks (in progress / done)."""
     q = update.callback_query
-    if q and q.data and q.data.startswith("STATUS_"):
-        q.data = "S_" + q.data[len("STATUS_") :]
-    await on_status(update, context)
+    if not q:
+        return
+
+    await q.answer()
+
+    data_str = q.data or ""
+    if not data_str.startswith("STATUS_"):
+        return
+
+    parts = data_str.split("_", 2)
+    if len(parts) < 3:
+        return
+
+    _, action, task_id = parts
+    task, data, tickets = get_task(task_id)
+    if not task:
+        await q.answer("Task not found.", show_alert=True)
+        return
+
+    if action == "PROGRESS":
+        task["status"] = "in_progress"
+    elif action == "DONE":
+        task["status"] = "done"
+    else:
+        return
+
+    tickets[task_id] = task
+    save_data(data)
+
+    text = format_task_message(task)
+    keyboard = build_task_keyboard(task_id)
+
+    chat_id = task.get("manager_chat_id")
+    message_id = task.get("manager_message_id")
+
+    try:
+        if chat_id and message_id:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                reply_markup=keyboard,
+            )
+        else:
+            await q.edit_message_text(text=text, reply_markup=keyboard)
+    except Exception as e:
+        logger.exception("Failed to edit task message on status update: %s", e)
+
+
+async def assign_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Assign the task to the callback user."""
+    q = update.callback_query
+    if not q:
+        return
+
+    await q.answer()
+
+    data_str = q.data or ""
+    if not data_str.startswith("ASSIGN_"):
+        return
+
+    _, task_id = data_str.split("_", 1)
+    task, data, tickets = get_task(task_id)
+    if not task:
+        await q.answer("Task not found.", show_alert=True)
+        return
+
+    user = update.effective_user
+    if not user:
+        await q.answer("Cannot determine user.", show_alert=True)
+        return
+
+    task["assigned_to"] = {
+        "id": user.id,
+        "username": user.username,
+        "name": user.full_name or (user.username or str(user.id)),
+    }
+
+    tickets[task_id] = task
+    save_data(data)
+
+    text = format_task_message(task)
+    keyboard = build_task_keyboard(task_id)
+
+    chat_id = task.get("manager_chat_id")
+    message_id = task.get("manager_message_id")
+
+    try:
+        if chat_id and message_id:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                reply_markup=keyboard,
+            )
+        else:
+            await q.edit_message_text(text=text, reply_markup=keyboard)
+    except Exception as e:
+        logger.exception("Failed to edit task message on assign: %s", e)
+
+
+async def escalate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Log an escalation event on the task and refresh the message."""
+    q = update.callback_query
+    if not q:
+        return
+
+    await q.answer()
+
+    data_str = q.data or ""
+    if not data_str.startswith("ESCALATE_"):
+        return
+
+    _, task_id = data_str.split("_", 1)
+    task, data, tickets = get_task(task_id)
+    if not task:
+        await q.answer("Task not found.", show_alert=True)
+        return
+
+    user = update.effective_user
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+
+    task.setdefault("messages", []).append(
+        {
+            "event": "escalate",
+            "by": user.id if user else None,
+            "at": now,
+        }
+    )
+
+    tickets[task_id] = task
+    save_data(data)
+
+    text = format_task_message(task)
+    keyboard = build_task_keyboard(task_id)
+
+    chat_id = task.get("manager_chat_id")
+    message_id = task.get("manager_message_id")
+
+    try:
+        if chat_id and message_id:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                reply_markup=keyboard,
+            )
+        else:
+            await q.edit_message_text(text=text, reply_markup=keyboard)
+    except Exception as e:
+        logger.exception("Failed to edit task message on escalate: %s", e)
 
 
 def build_application() -> Application:
@@ -184,6 +465,8 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("id", show_id))
     application.add_handler(CallbackQueryHandler(department_selected, pattern=r"^DEPT_"))
     application.add_handler(CallbackQueryHandler(status_handler, pattern=r"^STATUS_"))
+    application.add_handler(CallbackQueryHandler(assign_handler, pattern=r"^ASSIGN_"))
+    application.add_handler(CallbackQueryHandler(escalate_handler, pattern=r"^ESCALATE_"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_message))
 
     return application
