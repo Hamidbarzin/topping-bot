@@ -5,6 +5,7 @@ import time
 import socket
 from datetime import datetime
 
+from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import NetworkError, TimedOut, Conflict
 from telegram.ext import (
@@ -16,6 +17,15 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+
+from database.db import init_db, get_all_open_tasks
+from handlers.task_handler import create_task, status_command
+from handlers.callback_handler import handle_callback
+from handlers.file_handler import handle_file
+from handlers.announce_handler import announce
+
+
+load_dotenv()
 
 
 logging.basicConfig(
@@ -33,6 +43,9 @@ FALLON_ID = int(os.getenv("FALLON_ID", "0"))
 
 DEPT_MGR = {"IT": 722627622, "MARKETING": 722627622, "OPS": 722627622, "SALES": 722627622}
 DATA_FILE = "tickets.json"
+
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+GM_DASHBOARD_CHAT_ID = int(os.getenv("GM_DASHBOARD_CHAT_ID", "0"))
 
 
 def load_data():
@@ -484,11 +497,32 @@ async def escalate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.exception("Failed to edit task message on escalate: %s", e)
 
 
+async def daily_summary(context: ContextTypes.DEFAULT_TYPE):
+    """Send daily open-task summary to GM dashboard at 09:00 UTC."""
+    from utils.formatter import STATUS_EMOJI
+
+    tasks = get_all_open_tasks()
+    if not tasks:
+        text = "☀️ Good morning! No open tasks today."
+    else:
+        lines = [f"☀️ Daily Summary — {len(tasks)} open task(s)\n"]
+        for t in tasks:
+            emoji = STATUS_EMOJI.get(t["status"], "⚪")
+            assigned = f" → @{t['assigned_to']}" if t.get("assigned_to") else ""
+            lines.append(
+                f"{emoji} TASK-{t['task_id']:04d} [{t['department']}] {t['description'][:50]}{assigned}"
+            )
+        text = "\n".join(lines)
+
+    if GM_DASHBOARD_CHAT_ID:
+        await context.bot.send_message(GM_DASHBOARD_CHAT_ID, text)
+
+
 def build_application() -> Application:
-    token = os.getenv("BOT_TOKEN")
+    token = BOT_TOKEN
     if not token:
         raise RuntimeError(
-            "Environment variable BOT_TOKEN is not set. Please configure BOT_TOKEN on Render."
+            "Environment variable TELEGRAM_BOT_TOKEN is not set. Please configure TELEGRAM_BOT_TOKEN on Render."
         )
 
     application = (
@@ -498,17 +532,26 @@ def build_application() -> Application:
         .build()
     )
 
-    # Register handlers exactly once
+    # Commands
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("id", show_id))
-    application.add_handler(CallbackQueryHandler(department_selected, pattern=r"^DEPT_"))
-    application.add_handler(CallbackQueryHandler(status_handler, pattern=r"^STATUS_"))
-    application.add_handler(CallbackQueryHandler(assign_handler, pattern=r"^ASSIGN_"))
-    application.add_handler(CallbackQueryHandler(escalate_handler, pattern=r"^ESCALATE_"))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_message))
+    application.add_handler(CommandHandler("task", create_task))
+    application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("announce", announce))
+
+    # Inline button callbacks
+    application.add_handler(CallbackQueryHandler(handle_callback))
+
+    # File / photo attachments
+    application.add_handler(
+        MessageHandler(filters.Document.ALL | filters.PHOTO, handle_file)
+    )
 
     # Global error handler to avoid noisy "No error handlers are registered" messages
     application.add_error_handler(error_handler)
+
+    # Daily summary job at 09:00 UTC
+    application.job_queue.run_daily(daily_summary, time=__import__("datetime").time(9, 0, 0))
 
     return application
 
