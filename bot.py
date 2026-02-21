@@ -5,7 +5,7 @@ import time
 from datetime import datetime
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.error import NetworkError, TimedOut
+from telegram.error import NetworkError, TimedOut, Conflict
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -192,9 +192,15 @@ def build_application() -> Application:
 def main() -> None:
     logger.info("Starting Telegram bot worker process")
 
+    # Backoff for generic network issues
     initial_backoff_seconds = 5
     max_backoff_seconds = 300
     backoff_seconds = initial_backoff_seconds
+
+    # Separate backoff for Conflict errors (duplicate getUpdates)
+    conflict_initial_backoff_seconds = 30
+    conflict_max_backoff_seconds = 600  # 10 minutes cap
+    conflict_backoff_seconds = conflict_initial_backoff_seconds
 
     while True:
         try:
@@ -210,6 +216,7 @@ def main() -> None:
 
             logger.info("Polling stopped gracefully; restarting polling loop")
             backoff_seconds = initial_backoff_seconds
+            conflict_backoff_seconds = conflict_initial_backoff_seconds
 
         except (NetworkError, TimedOut) as e:
             logger.warning(
@@ -219,6 +226,21 @@ def main() -> None:
             )
             time.sleep(backoff_seconds)
             backoff_seconds = min(backoff_seconds * 2, max_backoff_seconds)
+
+        except Conflict as e:
+            logger.error(
+                "getUpdates Conflict detected: %s. This usually means another instance "
+                "is running with the same BOT_TOKEN (e.g. another Render worker, local "
+                "process, or another host). Ensure ONLY ONE polling instance is active. "
+                "Retrying in %s seconds.",
+                repr(e),
+                conflict_backoff_seconds,
+            )
+            time.sleep(conflict_backoff_seconds)
+            conflict_backoff_seconds = min(
+                conflict_backoff_seconds * 2,
+                conflict_max_backoff_seconds,
+            )
 
         except RuntimeError as e:
             logger.error("Fatal configuration error: %s", e)
