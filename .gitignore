@@ -1,0 +1,16 @@
+# Secrets and local config
+.env
+
+# Virtual environment
+venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Bot data (local state)
+tickets.json
+
+# OS
+.DS_Store
