@@ -38,6 +38,9 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("topping_bot")
+# Avoid logging full HTTP URLs (they contain BOT_TOKEN)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # ---------------------------------------------------------------------------
 # Config from ENV (validated on startup)
@@ -440,7 +443,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 def main() -> None:
     """Validate config, build app, run polling."""
     print("BOT LOADED FROM:", __file__)  # اگر این را ندیدی یعنی فایل دیگری اجرا می‌شود
-    print("DEBUG BOT_TOKEN:", "OK" if (BOT_TOKEN and BOT_TOKEN.strip()) else "NOT SET")
+    logger.info("BOT_TOKEN: %s", "OK" if (BOT_TOKEN and BOT_TOKEN.strip()) else "NOT SET")
     if not BOT_TOKEN or not BOT_TOKEN.strip():
         logger.error("BOT_TOKEN is not set. Set it in the environment and restart.")
         raise SystemExit(1)
